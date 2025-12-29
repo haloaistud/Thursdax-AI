@@ -1,0 +1,2 @@
+# Thursdax-AI
+Personal chatbot
