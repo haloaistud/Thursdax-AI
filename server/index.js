@@ -14,18 +14,20 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // Database initialization
-const dbPath = path.join(__dirname, '../database.db');
-const dbDirExists = fs.existsSync(path.dirname(dbPath));
+// Put DB inside the server directory for clarity: server/data.sqlite
+const dbPath = path.join(__dirname, 'data.sqlite');
+const dbDir = path.dirname(dbPath);
+const dbDirExists = fs.existsSync(dbDir);
 
 if (!dbDirExists) {
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.mkdirSync(dbDir, { recursive: true });
 }
 
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
     console.error('Error opening database:', err.message);
   } else {
-    console.log('Connected to SQLite database');
+    console.log('Connected to SQLite database at', dbPath);
     initializeDatabase();
   }
 });
@@ -99,8 +101,8 @@ app.post('/api/session/connect', asyncHandler(async (req, res) => {
 
   return new Promise((resolve, reject) => {
     db.run(
-      `INSERT INTO sessions (session_id, user_id, created_at, updated_at, is_active)
-       VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)`,
+      `INSERT INTO sessions (session_id, user_id, created_at, updated_at, is_active)`+
+      `VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)`,
       [session_id, user_id],
       function(err) {
         if (err) {
@@ -178,10 +180,10 @@ app.get('/api/messages', asyncHandler(async (req, res) => {
 
   return new Promise((resolve, reject) => {
     db.all(
-      `SELECT id, session_id, user_id, content, role, created_at
-       FROM messages
-       WHERE session_id = ?
-       ORDER BY created_at ASC`,
+      `SELECT id, session_id, user_id, content, role, created_at`+
+      `FROM messages`+
+      `WHERE session_id = ?`+
+      `ORDER BY created_at ASC`,
       [session_id],
       (err, rows) => {
         if (err) {
@@ -253,8 +255,8 @@ app.post('/api/messages', asyncHandler(async (req, res) => {
 
         // Insert message
         db.run(
-          `INSERT INTO messages (session_id, user_id, content, role, created_at)
-           VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          `INSERT INTO messages (session_id, user_id, content, role, created_at)`+
+          `VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
           [session_id, user_id || session.user_id, content, role],
           function(err) {
             if (err) {
@@ -309,10 +311,10 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Express server running on port ${PORT}`);
-  console.log(`Current time: 2025-12-29 04:25:51 UTC`);
+  console.log(`Current time: ${new Date().toISOString()} UTC`);
 });
 
 // Graceful shutdown
