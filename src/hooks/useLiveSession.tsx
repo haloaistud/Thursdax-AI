@@ -2,6 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 type Status = 'disconnected' | 'connecting' | 'connected' | 'error' | 'initializing';
 
+function ensureUserId(): string {
+  let id = localStorage.getItem('thursday_user_id');
+  if (!id) {
+    id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    localStorage.setItem('thursday_user_id', id);
+  }
+  return id;
+}
+
 export function useLiveSession(isMicMuted?: boolean) {
   const [status, setStatus] = useState<Status>('disconnected');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
@@ -18,6 +27,8 @@ export function useLiveSession(isMicMuted?: boolean) {
   const lastModelMessageId = useRef<number>(0);
   const pollRef = useRef<number | null>(null);
   const isMutedRef = useRef(!!isMicMuted);
+  const sessionIdRef = useRef<string | null>(localStorage.getItem('thursday_session_id'));
+  const userIdRef = useRef<string>(ensureUserId());
 
   useEffect(() => { isMutedRef.current = !!isMicMuted; }, [isMicMuted]);
 
@@ -56,24 +67,48 @@ export function useLiveSession(isMicMuted?: boolean) {
   const connect = useCallback(async () => {
     try {
       setStatus('connecting');
-      const res = await fetch('/api/session/connect', { method: 'POST' });
-      if (!res.ok) throw new Error('connect failed');
+
+      const res = await fetch('/api/session/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userIdRef.current })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.error || 'connect failed');
+      }
+
+      const payload = await res.json();
+      const session_id = payload?.session_id;
+      if (!session_id) throw new Error('No session_id returned from server');
+
+      sessionIdRef.current = session_id;
+      localStorage.setItem('thursday_session_id', session_id);
+
       await startAnalyser();
       setStatus('connected');
 
+      // Clear any existing poll
       if (pollRef.current) window.clearInterval(pollRef.current);
+
+      // Poll messages with session_id
       pollRef.current = window.setInterval(async () => {
         try {
-          const r = await fetch('/api/messages');
+          const sid = sessionIdRef.current;
+          if (!sid) return;
+          const r = await fetch(`/api/messages?session_id=${encodeURIComponent(sid)}`);
           if (!r.ok) return;
           const data = await r.json();
-          if (Array.isArray(data) && data.length > 0) {
-            const last = data[data.length - 1];
+          // server responds with { success, session_id, messages }
+          const messages = Array.isArray(data?.messages) ? data.messages : (Array.isArray(data) ? data : []);
+          if (messages.length > 0) {
+            const last = messages[messages.length - 1];
             if (last.role === 'model' && last.id !== lastModelMessageId.current) {
               lastModelMessageId.current = last.id;
-              setTranscript(prev => ({ ...prev, ai: last.text }));
+              setTranscript(prev => ({ ...prev, ai: last.content || last.text || '' }));
               setIsAiSpeaking(true);
-              const approxMs = Math.max(800, last.text.split(/\s+/).length * 150);
+              const approxMs = Math.max(800, (String(last.content || last.text || '').split(/\s+/).length) * 150);
               setTimeout(() => setIsAiSpeaking(false), approxMs);
             }
           }
@@ -89,9 +124,23 @@ export function useLiveSession(isMicMuted?: boolean) {
 
   const disconnect = useCallback(async () => {
     try {
-      await fetch('/api/session/disconnect', { method: 'POST' });
-    } catch (e) {
-      console.warn('disconnect failed', e);
+      const sid = sessionIdRef.current;
+      if (!sid) {
+        // nothing to disconnect
+        if (pollRef.current) {
+          window.clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+        stopAnalyser();
+        setStatus('disconnected');
+        return;
+      }
+
+      await fetch('/api/session/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid })
+      }).catch(e => console.warn('disconnect failed', e));
     } finally {
       if (pollRef.current) {
         window.clearInterval(pollRef.current);
@@ -100,6 +149,8 @@ export function useLiveSession(isMicMuted?: boolean) {
       stopAnalyser();
       setStatus('disconnected');
       setIsAiSpeaking(false);
+      sessionIdRef.current = null;
+      localStorage.removeItem('thursday_session_id');
     }
   }, []);
 
@@ -122,7 +173,10 @@ export function useLiveSession(isMicMuted?: boolean) {
 
   useEffect(() => {
     return () => {
-      if (pollRef.current) window.clearInterval(pollRef.current);
+      if (pollRef.current) {
+        window.clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
       stopAnalyser();
     };
   }, []);
@@ -139,5 +193,10 @@ export function useLiveSession(isMicMuted?: boolean) {
     inputAnalyzer: analyserRef.current,
     outputAnalyzer: null,
     logs,
+    // expose session/user ids for other components if needed
+    _internal: {
+      get sessionId() { return sessionIdRef.current; },
+      get userId() { return userIdRef.current; }
+    }
   };
 }
